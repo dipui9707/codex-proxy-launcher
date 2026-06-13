@@ -1,0 +1,6 @@
+# Codex Proxy Config
+# Edit this file to change proxy settings.
+# Launcher picks up changes on next launch — no need to regenerate.
+
+PROXY_HOST=127.0.0.1
+PROXY_PORT=7897
