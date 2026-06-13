@@ -22,6 +22,12 @@ BYPASS_CHROMIUM='<local>;localhost;127.0.0.1;::1;*.local;10.*;192.168.*;172.16.*
 
 NO_PROXY_VALUE='127.0.0.1,localhost,::1,*.local,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12'
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROXY_ICON_ASSET="$SKILL_DIR/assets/codex-proxy.ico"
+PROXY_ICON_PNG_ASSET="$SKILL_DIR/assets/codex-proxy.png"
+PROXY_ICON_ICNS_ASSET="$SKILL_DIR/assets/codex-proxy.icns"
+
 # ─────────────────────────────────────────────────────────────
 # macOS: generate CodexProxy.app bundle
 # ─────────────────────────────────────────────────────────────
@@ -29,7 +35,7 @@ generate_macos() {
     local target_dir="${1:-.}"
     local app_dir="$target_dir/CodexProxy.app"
 
-    mkdir -p "$app_dir/Contents/MacOS"
+    mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 
     # --- Info.plist ---
     # Standard fields. CFBundleExecutable MUST match the script filename.
@@ -47,6 +53,8 @@ generate_macos() {
   <string>Codex Proxy</string>
   <key>CFBundleDisplayName</key>
   <string>Codex Proxy</string>
+  <key>CFBundleIconFile</key>
+  <string>codex-proxy</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleVersion</key>
@@ -118,6 +126,9 @@ SCRIPT
     rm -f "$app_dir/Contents/MacOS/CodexProxy.bak"
 
     chmod +x "$app_dir/Contents/MacOS/CodexProxy"
+    if [[ -f "$PROXY_ICON_ICNS_ASSET" ]]; then
+        cp "$PROXY_ICON_ICNS_ASSET" "$app_dir/Contents/Resources/codex-proxy.icns"
+    fi
     echo "✅ macOS: $app_dir"
 }
 
@@ -191,6 +202,9 @@ SCRIPT
     sed -i.bak "s|__BYPASS_CHROMIUM__|$BYPASS_CHROMIUM|g" "$target_dir/codex-proxy.sh"
     rm -f "$target_dir/codex-proxy.sh.bak"
     chmod +x "$target_dir/codex-proxy.sh"
+    if [[ -f "$PROXY_ICON_PNG_ASSET" ]]; then
+        cp "$PROXY_ICON_PNG_ASSET" "$target_dir/codex-proxy.png"
+    fi
 
     # --- .desktop entry ---
     cat > "$target_dir/codex-proxy.desktop" << DESKTOP
@@ -198,6 +212,7 @@ SCRIPT
 Name=Codex Proxy
 Comment=Launch Codex with proxy
 Exec=$target_dir/codex-proxy.sh
+Icon=$target_dir/codex-proxy.png
 Type=Application
 Categories=Development;
 Terminal=false
@@ -210,18 +225,23 @@ DESKTOP
 }
 
 # ─────────────────────────────────────────────────────────────
-# Windows: generate CodexProxy.bat
+# Windows: generate CodexProxy.bat + Start-CodexProxy.ps1
 # ─────────────────────────────────────────────────────────────
 generate_windows() {
     local target_dir="${1:-.}"
 
     cat > "$target_dir/CodexProxy.bat" << 'BAT'
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 title Codex Proxy Launcher
 
 set "SCRIPT_DIR=%~dp0"
 set "CONF_FILE=%SCRIPT_DIR%proxy.conf"
+set "CHECK_ONLY=0"
+set "APP_ID=OpenAI.Codex_2p2nqsd0c76g0!App"
+set "BYPASS_CHROMIUM=__BYPASS_CHROMIUM__"
+set "NO_PROXY_VALUE=__NO_PROXY__"
+if /I "%~1"=="--check" set "CHECK_ONLY=1"
 
 :: Load config
 set "PROXY_HOST=127.0.0.1"
@@ -234,56 +254,167 @@ if exist "%CONF_FILE%" (
 )
 set "PROXY_URL=http://%PROXY_HOST%:%PROXY_PORT%"
 
-:: Find Codex
-set "CODEX_BIN="
-for %%p in (
-    "%LOCALAPPDATA%\Programs\Codex\Codex.exe"
-    "%ProgramFiles%\Codex\Codex.exe"
-    "%USERPROFILE%\AppData\Local\Programs\codex\Codex.exe"
-) do ( if exist "%%~p" set "CODEX_BIN=%%~p" )
-if "%CODEX_BIN%"=="" (
-    for /f "delims=" %%p in ('where codex 2^>nul') do (
-        set "CODEX_BIN=%%p" & goto :found
-    )
-    :found
-)
-if "%CODEX_BIN%"=="" (
-    echo [ERROR] Codex.exe not found.
-    pause & exit /b 1
-)
-
 :: Check proxy
 echo Checking proxy %PROXY_URL% ...
 powershell -NoProfile -Command "$t=New-Object Net.Sockets.TcpClient;try{$t.Connect('%PROXY_HOST%',%PROXY_PORT%);$t.Close();exit 0}catch{exit 1}" >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Proxy %PROXY_URL% not reachable. Start your proxy software first.
-    pause & exit /b 1
+    if "%CHECK_ONLY%"=="0" pause
+    exit /b 1
+)
+
+:: Prefer direct GUI launch so child app-server inherits proxy env.
+set "CODEX_BIN="
+set "HAS_APP_ID=0"
+call :FindCodexDirect
+if "%CODEX_BIN%"=="" (
+    powershell -NoProfile -Command "if (Get-StartApps | Where-Object { $_.AppID -eq '%APP_ID%' }) { exit 0 } else { exit 1 }" >nul 2>&1
+    if %errorlevel% equ 0 set "HAS_APP_ID=1"
+)
+if "%CODEX_BIN%"=="" if "%HAS_APP_ID%"=="0" (
+    echo [ERROR] Codex app entry was not found.
+    if "%CHECK_ONLY%"=="0" pause
+    exit /b 1
 )
 
 :: Check Codex not already running
 tasklist /FI "IMAGENAME eq Codex.exe" 2>nul | find /I "Codex.exe" >nul
 if %errorlevel% equ 0 (
     echo [WARNING] Codex already running. Quit it completely, then re-launch.
-    pause & exit /b 0
+    if "%CHECK_ONLY%"=="1" (
+        echo Check result: launcher is configured, but proxy flags need a cold start.
+        exit /b 0
+    )
+    pause
+    exit /b 0
+)
+
+if "%CHECK_ONLY%"=="1" (
+    if not "%CODEX_BIN%"=="" (
+        echo Check result: OK. Direct Codex path: %CODEX_BIN%
+    ) else (
+        echo Check result: OK. AppID fallback: %APP_ID%
+    )
+    exit /b 0
 )
 
 :: Launch
 set "HTTP_PROXY=%PROXY_URL%" & set "HTTPS_PROXY=%PROXY_URL%" & set "ALL_PROXY=%PROXY_URL%"
 set "http_proxy=%PROXY_URL%" & set "https_proxy=%PROXY_URL%" & set "all_proxy=%PROXY_URL%"
-set "NO_PROXY=__NO_PROXY__" & set "no_proxy=__NO_PROXY__"
+set "NO_PROXY=%NO_PROXY_VALUE%" & set "no_proxy=%NO_PROXY_VALUE%"
 
 echo Launching Codex with proxy %PROXY_URL% ...
-start "" "%CODEX_BIN%" --proxy-server="%PROXY_URL%" --proxy-bypass-list="__BYPASS_CHROMIUM__"
+if not "%CODEX_BIN%"=="" (
+    start "" "%CODEX_BIN%" --proxy-server="%PROXY_URL%" --proxy-bypass-list="%BYPASS_CHROMIUM%"
+    timeout /t 2 >nul
+    exit /b 0
+) else (
+    echo [WARNING] Direct Codex.exe not found; using AppID fallback. Child app-server may not inherit proxy environment.
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%Start-CodexProxy.ps1" -AppId "%APP_ID%" -LaunchArgs "--proxy-server=%PROXY_URL% --proxy-bypass-list=%BYPASS_CHROMIUM%"
+)
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to launch Codex.
+    pause
+    exit /b 1
+)
 timeout /t 2 >nul
-exit
+exit /b 0
+
+:FindCodexDirect
+set "CODEX_BIN="
+for /f "delims=" %%p in ('powershell -NoProfile -Command "$pkg=Get-AppxPackage OpenAI.Codex -ErrorAction SilentlyContinue; if($pkg){$p=Join-Path $pkg.InstallLocation 'app\Codex.exe'; if(Test-Path $p){$p}}"') do (
+    set "CODEX_BIN=%%p"
+    exit /b 0
+)
+for %%p in (
+    "%LOCALAPPDATA%\Programs\Codex\Codex.exe"
+    "%ProgramFiles%\Codex\Codex.exe"
+    "%USERPROFILE%\AppData\Local\Programs\codex\Codex.exe"
+) do (
+    if exist "%%~p" (
+        set "CODEX_BIN=%%~p"
+        exit /b 0
+    )
+)
+for /f "delims=" %%p in ('where codex 2^>nul') do (
+    echo %%p | find /I "\WindowsApps\" >nul
+    if errorlevel 1 (
+        set "CODEX_BIN=%%p"
+        exit /b 0
+    )
+)
+exit /b 0
 BAT
+
+    cat > "$target_dir/Start-CodexProxy.ps1" << 'PS1'
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$AppId,
+
+    [Parameter(Mandatory = $true)]
+    [string]$LaunchArgs
+)
+
+$code = @"
+using System;
+using System.Runtime.InteropServices;
+
+public enum ActivateOptions
+{
+    None = 0,
+    DesignMode = 1,
+    NoErrorUI = 2,
+    NoSplashScreen = 4
+}
+
+[ComImport]
+[Guid("2e941141-7f97-4756-ba1d-9decde894a3d")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IApplicationActivationManager
+{
+    int ActivateApplication(
+        [MarshalAs(UnmanagedType.LPWStr)] string appUserModelId,
+        [MarshalAs(UnmanagedType.LPWStr)] string arguments,
+        ActivateOptions options,
+        out uint processId);
+}
+
+[ComImport]
+[Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")]
+class ApplicationActivationManager
+{
+}
+
+public static class PackagedAppLauncher
+{
+    public static uint Activate(string appId, string args)
+    {
+        var manager = (IApplicationActivationManager)new ApplicationActivationManager();
+        uint processId;
+        int hr = manager.ActivateApplication(appId, args, ActivateOptions.None, out processId);
+        if (hr < 0)
+        {
+            Marshal.ThrowExceptionForHR(hr);
+        }
+        return processId;
+    }
+}
+"@
+
+Add-Type -TypeDefinition $code -ErrorAction Stop
+$activatedProcessId = [PackagedAppLauncher]::Activate($AppId, $LaunchArgs)
+Write-Host "Activated Codex process $activatedProcessId"
+PS1
 
     # Replace placeholders (sed -i.bak + rm works with both GNU and BSD sed)
     sed -i.bak "s|__NO_PROXY__|$NO_PROXY_VALUE|g" "$target_dir/CodexProxy.bat"
     sed -i.bak "s|__BYPASS_CHROMIUM__|$BYPASS_CHROMIUM|g" "$target_dir/CodexProxy.bat"
     rm -f "$target_dir/CodexProxy.bat.bak"
+    if [[ -f "$PROXY_ICON_ASSET" ]]; then
+        cp "$PROXY_ICON_ASSET" "$target_dir/codex-proxy.ico"
+    fi
 
-    echo "✅ Windows: $target_dir/CodexProxy.bat"
+    echo "✅ Windows: $target_dir/CodexProxy.bat + Start-CodexProxy.ps1"
 }
 
 # ── proxy.conf template ───────────────────────────────────────

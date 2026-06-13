@@ -43,6 +43,15 @@ The generated `.app` bundle uses a shell script as executable — it gets the de
 ### Linux Codex path is unpredictable
 Unlike macOS (`/Applications/Codex.app` is fixed by convention), Linux Codex paths vary wildly. The script probes common locations; if all fail, tell the user to set `CODEX_BIN` at the top of the generated script.
 
+### Windows Store/MSIX has two Codex executables
+If Windows Codex is installed as `OpenAI.Codex` under `C:\Program Files\WindowsApps`, `app\resources\codex.exe` is the backend CLI/app-server and can print "拒绝访问" / "Access is denied" when launched directly. Prefer the GUI entry `app\Codex.exe` discovered via `Get-AppxPackage OpenAI.Codex`, and pass Chromium proxy flags to that executable. Avoid `where codex` results inside `WindowsApps`.
+
+### AppID activation can miss child-process proxy env
+`IApplicationActivationManager` can pass `--proxy-server` to the Electron GUI, but it may not inherit `HTTP_PROXY`/`HTTPS_PROXY` into Codex's child `app-server`. If the GUI opens but usage says "reconnecting" until global proxy is enabled, launch `app\Codex.exe` directly from the `.bat` so both Chromium flags and environment variables reach Codex and its children. Use AppID activation only as a fallback when direct GUI launch is unavailable.
+
+### Windows batch `errorlevel` can cause false launch failures
+After `tasklist | find` confirms Codex is not running, `%errorlevel%` remains `1`. A later `start "" "%CODEX_BIN%" ...` may successfully launch Codex without resetting that value. In the direct-launch branch, exit immediately after `start` and do not run a generic `%errorlevel%` failure check. Only check `%errorlevel%` for the PowerShell AppID fallback branch.
+
 ### Edge case: proxy is reachable but drops traffic
 `nc -z` only checks TCP handshake. A proxy that accepts connections but doesn't forward traffic will pass the check but Codex still won't work. If the user reports "launcher says OK but Codex still can't connect," suspect a proxy misconfiguration, not the launcher.
 
@@ -55,5 +64,5 @@ Unlike macOS (`/Applications/Codex.app` is fixed by convention), Linux Codex pat
 2. **Read or create `proxy.conf`** — two lines: `PROXY_HOST=127.0.0.1` and `PROXY_PORT=7897`. If the user specifies a different proxy, write their values instead.
 3. **Read `scripts/generate.sh`** — it contains the launcher templates for all three platforms. Adapt the Codex binary path to the user's actual installation, then write the launcher file(s).
 4. **macOS only**: After writing, `chmod +x` the script inside the .app bundle.
-5. **Verify**: `bash -n` the shell scripts. For `.bat`, confirm it's complete and non-empty.
-6. **Tell the user** where the files are, that `proxy.conf` is the only file they ever need to edit, and how to create a shortcut (Dock / .desktop / Pin to Start).
+5. **Verify**: `bash -n` the shell scripts. For `.bat`, run `CodexProxy.bat --check` where possible; it should validate proxy reachability and Codex discovery without launching a new Codex instance.
+6. **Tell the user** where the files are, that `proxy.conf` is the only file they ever need to edit, and how to create a shortcut (Dock / .desktop / Pin to Start). Use bundled proxy icons when available: `assets/codex-proxy.icns` for macOS `.app`, `assets/codex-proxy.png` for Linux `.desktop`, and `assets/codex-proxy.ico` for Windows shortcuts.
