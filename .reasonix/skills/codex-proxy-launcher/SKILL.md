@@ -37,8 +37,11 @@ Using the wrong separator silently breaks bypass. The template scripts handle bo
 ### Upper + lowercase env vars
 Some tools read `HTTP_PROXY`, others read `http_proxy`. Set all six variants. The templates already do this.
 
-### macOS .app has no custom icon
-The generated `.app` bundle uses a shell script as executable — it gets the default "terminal script" icon. This is expected and harmless. Users can paste a custom icon via Finder's Get Info panel if they care.
+### macOS .app icon must be declared in Info.plist
+For a custom macOS icon, copy `assets/codex-proxy.icns` to `Contents/Resources/codex-proxy.icns` and set `CFBundleIconFile` to `codex-proxy` in `Contents/Info.plist`. Finder/Dock can cache icons, so if the icon does not refresh immediately, remove the old Dock item and re-add the `.app`, or touch the bundle.
+
+### Apple Silicon shell-script launchers can skew Codex shell architecture
+On Apple Silicon, a shell-script `.app` wrapper can still launch Codex successfully but leave Codex's PTY/shell environment reporting `arch` as `i386` / `x86_64` under Rosetta-like compatibility. If the user cares about native toolchains, verify with `arch`, `uname -m`, and `file /Applications/Codex.app/Contents/MacOS/Codex`. If the original Codex.app is arm64 but the proxy launcher shell is not, replace the shell-script wrapper with an arm64 Mach-O launcher that sets proxy env vars and execs Codex with `--proxy-server` / `--proxy-bypass-list`.
 
 ### Linux Codex path is unpredictable
 Unlike macOS (`/Applications/Codex.app` is fixed by convention), Linux Codex paths vary wildly. The script probes common locations; if all fail, tell the user to set `CODEX_BIN` at the top of the generated script.
